@@ -1,0 +1,135 @@
+import os
+import sys
+import psutil
+import uvicorn
+from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+
+import analyzer
+import tunnel_manager
+
+# Reconfigure stdout/stderr for Unicode UTF-8 on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
+app = FastAPI(title="Hannah Personal AI", version="1.0.0")
+
+# Request Schemas
+class TranslateRequest(BaseModel):
+    text: str
+    source_lang: Optional[str] = "Auto"
+    target_lang: Optional[str] = "English"
+    tone: Optional[str] = "Polite"
+    host_name: Optional[str] = "Hannah"
+
+class GrammarCheckRequest(BaseModel):
+    text: str
+    language: Optional[str] = "Auto"
+    host_name: Optional[str] = "Hannah"
+
+class ChatRequest(BaseModel):
+    message: str
+    host_name: Optional[str] = "Hannah"
+
+# API Endpoints
+@app.get("/api/health")
+def health_check():
+    return {"status": "online", "name": "Hannah Personal AI", "version": "1.0.0"}
+
+@app.get("/api/system/stats")
+def get_stats():
+    cpu_usage = psutil.cpu_percent(interval=0.5)
+    ram = psutil.virtual_memory()
+    return {
+        "cpu_percent": cpu_usage,
+        "ram_used_gb": round(ram.used / (1024**3), 2),
+        "ram_total_gb": round(ram.total / (1024**3), 2),
+        "ram_percent": ram.percent
+    }
+
+@app.post("/api/translate")
+def handle_translate(req: TranslateRequest):
+    return analyzer.translate_text(req.text, req.source_lang, req.target_lang, req.tone, host_name=req.host_name or "Hannah")
+
+@app.post("/api/translate/file")
+async def handle_translate_file(
+    file: UploadFile = File(...),
+    instruction: Optional[str] = Form(""),
+    source_lang: Optional[str] = Form("Auto"),
+    target_lang: Optional[str] = Form("English"),
+    tone: Optional[str] = Form("Polite"),
+    host_name: Optional[str] = Form("Hannah")
+):
+    content = await file.read()
+    return analyzer.translate_uploaded_file(
+        file_bytes=content,
+        filename=file.filename,
+        mime_type=file.content_type,
+        instruction=instruction,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        tone=tone,
+        host_name=host_name or "Hannah"
+    )
+
+@app.post("/api/grammar_check")
+def handle_grammar_check(req: GrammarCheckRequest):
+    return analyzer.check_grammar_and_facts(req.text, req.language, host_name=req.host_name or "Hannah")
+
+@app.post("/api/grammar_check/file")
+async def handle_grammar_check_file(
+    file: UploadFile = File(...),
+    instruction: Optional[str] = Form(""),
+    language: Optional[str] = Form("Auto"),
+    host_name: Optional[str] = Form("Hannah")
+):
+    content = await file.read()
+    return analyzer.check_grammar_uploaded_file(
+        file_bytes=content,
+        filename=file.filename,
+        mime_type=file.content_type,
+        instruction=instruction,
+        language=language,
+        host_name=host_name or "Hannah"
+    )
+
+@app.post("/api/chat")
+def handle_chat(req: ChatRequest):
+    return analyzer.chat_with_hannah(req.message, host_name=req.host_name or "Hannah")
+
+@app.get("/api/system/network_info")
+def get_network_info():
+    port = int(os.environ.get("PORT", 8889))
+    return tunnel_manager.get_network_info(port=port)
+
+@app.post("/api/system/tunnel/start")
+def start_public_tunnel():
+    port = int(os.environ.get("PORT", 8889))
+    return tunnel_manager.start_tunnel(port=port)
+
+@app.post("/api/system/tunnel/stop")
+def stop_public_tunnel():
+    return tunnel_manager.stop_tunnel()
+
+# Static files setup
+WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+if os.path.exists(WEB_DIR):
+    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+@app.get("/")
+def read_root():
+    index_path = os.path.join(WEB_DIR, "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Hannah Personal AI Backend Running</h1>")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8889))
+    print(f"Hannah Personal AI Server launching on http://0.0.0.0:{port}...")
+    uvicorn.run("server:app", host="0.0.0.0", port=port)
